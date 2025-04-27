@@ -47,9 +47,26 @@ atomic_uint_fast8_t scan_matrix[13] = {
 	0,
 	0,
 	0,
-	0x20,
+	0,
 	0x41
 };
+
+uint8_t wyse2hid[104] = {
+	HID_KEY_PRINT_SCREEN,  HID_KEY_NONE, HID_KEY_ESCAPE, HID_KEY_PAUSE, HID_KEY_Y, HID_KEY_MINUS, HID_KEY_COMMA, HID_KEY_APOSTROPHE,
+	0, HID_KEY_NONE, HID_KEY_NONE, HID_KEY_NONE, HID_KEY_NONE/*HID_KEY_CLOSE_SQ*/, HID_KEY_SEMICOLON, HID_KEY_NONE, HID_KEY_ARROW_UP,
+	0, HID_KEY_SPACE, HID_KEY_NONE, HID_KEY_NONE, HID_KEY_O, HID_KEY_NONE, HID_KEY_ENTER, HID_KEY_PAGE_DOWN,
+	HID_KEY_KEYPAD_COMMA,   HID_KEY_NONE,   HID_KEY_KEYPAD_ENTER, HID_KEY_KEYPAD_DECIMAL, HID_KEY_KEYPAD_9, HID_KEY_NONE/*HID_KEY_OPEN_SQ*/, HID_KEY_GRAVE, HID_KEY_NONE,
+	HID_KEY_2, HID_KEY_1, HID_KEY_INSERT, HID_KEY_MINUS, HID_KEY_I, HID_KEY_L, HID_KEY_Z, HID_KEY_KEYPAD_8,
+	HID_KEY_F7, HID_KEY_F14, HID_KEY_0, HID_KEY_BACKSPACE, HID_KEY_U, HID_KEY_K, HID_KEY_PERIOD, HID_KEY_KEYPAD_7,
+	HID_KEY_F6, HID_KEY_F13, HID_KEY_9, HID_KEY_HOME, HID_KEY_T, HID_KEY_J, HID_KEY_B, HID_KEY_KEYPAD_6,
+	HID_KEY_F5, HID_KEY_F12, HID_KEY_8, HID_KEY_ARROW_DOWN, HID_KEY_P, HID_KEY_H, HID_KEY_M, HID_KEY_KEYPAD_5,
+	HID_KEY_F4, HID_KEY_F11, HID_KEY_7, HID_KEY_ARROW_RIGHT, HID_KEY_R, HID_KEY_G, HID_KEY_N, HID_KEY_KEYPAD_4,
+	HID_KEY_F3, HID_KEY_F10, HID_KEY_6, HID_KEY_ARROW_LEFT, HID_KEY_W, HID_KEY_D, HID_KEY_V, HID_KEY_KEYPAD_3,
+	HID_KEY_F2, HID_KEY_F9, HID_KEY_5, HID_KEY_F16, HID_KEY_E, HID_KEY_F, HID_KEY_X, HID_KEY_KEYPAD_2,
+	HID_KEY_F1, HID_KEY_F8, HID_KEY_4, HID_KEY_F15, HID_KEY_Q, HID_KEY_S, HID_KEY_C, HID_KEY_KEYPAD_1,
+	HID_KEY_DELETE, HID_KEY_EQUAL, HID_KEY_3, HID_KEY_BACKSPACE, HID_KEY_TAB, HID_KEY_A, HID_KEY_SLASH, HID_KEY_KEYPAD_0
+};
+uint8_t hid2wyse[256];
 
 uint8_t kb_addr = 0;
 uint8_t kb_inst = 0;
@@ -62,7 +79,12 @@ void kb_reset() {
 }
 
 void kb_send_key(uint8_t key, bool state, uint8_t modifiers) {
-	// TODO
+	uint8_t wyse_scancode = hid2wyse[key];
+	if (state) {
+		scan_matrix[wyse_scancode >> 3] |= 1 << (wyse_scancode & 0x7);
+	} else {
+		scan_matrix[wyse_scancode >> 3] &= ~(1 << (wyse_scancode & 0x7));
+	}
 }
 
 void tuh_kb_set_leds(uint8_t leds) {
@@ -160,14 +182,7 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
 }
 
 void bitbang_wy60() {
-	// Data out pin
-	gpio_init(GPIO_DATA_OUT);
-	gpio_set_dir(GPIO_DATA_OUT, GPIO_OUT);
-	gpio_put(GPIO_DATA_OUT, 1);
 
-	// Clock pin
-	gpio_init(GPIO_CLOCK_IN);
-	gpio_set_dir(GPIO_CLOCK_IN, GPIO_IN);
 
 	bool clk_prev = gpio_get(GPIO_CLOCK_IN);
 	absolute_time_t prev_high_time = 0;
@@ -180,6 +195,7 @@ void bitbang_wy60() {
 		// Reset sequence if clock is low for 36 us or more
 		if (!clk_now && absolute_time_diff_us(prev_high_time, now) > 36) {
 			bit_index = 0;
+			gpio_put(GPIO_DATA_OUT, ~(scan_matrix[bit_index >> 3] >> (bit_index & 0x7)) & 0x1);
 		}
 		if (clk_now) {
 			prev_high_time = now;
@@ -187,17 +203,18 @@ void bitbang_wy60() {
 		// Falling edge
 		if (clk_prev && !clk_now) {
 			// Set data
-			if (bit_index == 85) {
+			/*if (bit_index == 32) {
 				gpio_put(GPIO_DATA_OUT, 0);
 			} else {
 				gpio_put(GPIO_DATA_OUT, 1);
-			}
-
+			}*/
 			// Increment index
 			bit_index++;
 			if (bit_index > 8 * sizeof(scan_matrix) / sizeof(scan_matrix[0])) {
 				bit_index = 0;
 			}
+
+			gpio_put(GPIO_DATA_OUT, ~(scan_matrix[bit_index >> 3] >> (bit_index & 0x7)) & 0x1);
 		}
 
 		clk_prev = clk_now;
@@ -212,6 +229,21 @@ int main() {
 	gpio_init(PICO_DEFAULT_LED_PIN);
 	gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
 	gpio_put(PICO_DEFAULT_LED_PIN, 0);
+
+	// Data out pin
+	gpio_init(GPIO_DATA_OUT);
+	gpio_set_dir(GPIO_DATA_OUT, GPIO_OUT);
+	gpio_put(GPIO_DATA_OUT, 1);
+
+	// Clock pin
+	gpio_init(GPIO_CLOCK_IN);
+	gpio_set_dir(GPIO_CLOCK_IN, GPIO_IN);
+
+	// Init hid2wyse
+	memset(hid2wyse, 0, sizeof(hid2wyse));
+	for (int i = 0; i < sizeof(wyse2hid) / sizeof(wyse2hid[0]); i++) {
+		hid2wyse[wyse2hid[i]] = i;
+	}
 
 	printf("%s-%s\n", PICO_PROGRAM_NAME, PICO_PROGRAM_VERSION_STRING);
 
