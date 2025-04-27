@@ -31,6 +31,7 @@
 
 #include "pico/stdlib.h"
 #include "pico/time.h"
+#include "pico/multicore.h"
 #include "bsp/board_api.h"
 #include "tusb.h"
 
@@ -158,34 +159,48 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
 	tuh_hid_receive_report(dev_addr, instance);
 }
 
+void bitbang_wy60() {
+	// Data out pin
+	gpio_init(GPIO_DATA_OUT);
+	gpio_set_dir(GPIO_DATA_OUT, GPIO_OUT);
+	gpio_put(GPIO_DATA_OUT, 1);
 
-void gpio_callback(unsigned int gpio, uint32_t events) {
-	volatile static int bit_index = 0;
-	volatile static absolute_time_t last_wake = 0;
+	// Clock pin
+	gpio_init(GPIO_CLOCK_IN);
+	gpio_set_dir(GPIO_CLOCK_IN, GPIO_IN);
 
-	// Reset sequence on timeout
-	absolute_time_t now = get_absolute_time();
-	if (absolute_time_diff_us(last_wake, now) > 200) {
-		bit_index = 0;
-		gpio_put(PICO_DEFAULT_LED_PIN, 0);
-	} else {
-		gpio_put(PICO_DEFAULT_LED_PIN, 1);
-	}
-	last_wake = now;
+	bool clk_prev = gpio_get(GPIO_CLOCK_IN);
+	absolute_time_t prev_high_time = 0;
+	int bit_index = 0;
+	while (1) {
+		// Sample
+		bool clk_now = gpio_get(GPIO_CLOCK_IN);
+		absolute_time_t now = get_absolute_time();
 
-	// Shift out bit from scan_matrix
-	//gpio_put(GPIO_DATA_OUT, !((scan_matrix[bit_index >> 3] >> (bit_index & 0x7)) & 0x1));
+		// Reset sequence if clock is low for 36 us or more
+		if (!clk_now && absolute_time_diff_us(prev_high_time, now) > 36) {
+			bit_index = 0;
+		}
+		if (clk_now) {
+			prev_high_time = now;
+		}
+		// Falling edge
+		if (clk_prev && !clk_now) {
+			// Set data
+			if (bit_index == 85) {
+				gpio_put(GPIO_DATA_OUT, 0);
+			} else {
+				gpio_put(GPIO_DATA_OUT, 1);
+			}
 
-	if (bit_index == 81) {
-		gpio_put(GPIO_DATA_OUT, 0);
-	} else {
-		gpio_put(GPIO_DATA_OUT, 1);
-	}
+			// Increment index
+			bit_index++;
+			if (bit_index > 8 * sizeof(scan_matrix) / sizeof(scan_matrix[0])) {
+				bit_index = 0;
+			}
+		}
 
-	bit_index++;
-	if (bit_index > 8 * sizeof(scan_matrix) / sizeof(scan_matrix[0])) {
-	//if (bit_index > 160) {
-		bit_index = 0;
+		clk_prev = clk_now;
 	}
 }
 
@@ -198,17 +213,10 @@ int main() {
 	gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
 	gpio_put(PICO_DEFAULT_LED_PIN, 0);
 
-	// Data out pin
-	gpio_init(GPIO_DATA_OUT);
-	gpio_set_dir(GPIO_DATA_OUT, GPIO_OUT);
-	gpio_put(GPIO_DATA_OUT, 1);
-
-	// Clock pin
-	gpio_init(GPIO_CLOCK_IN);
-	gpio_set_dir(GPIO_CLOCK_IN, GPIO_IN);
-	gpio_set_irq_enabled_with_callback(GPIO_CLOCK_IN, GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
-
 	printf("%s-%s\n", PICO_PROGRAM_NAME, PICO_PROGRAM_VERSION_STRING);
+
+	/// \tag::setup_multicore[]
+	multicore_launch_core1(bitbang_wy60);
 
 	while (1) {
 		tuh_task();
